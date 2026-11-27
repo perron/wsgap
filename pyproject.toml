@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wsgap"
+version = "0.1.0"
+description = "Find Google Workspace REST calls in code and show which Workspace MCP tool replaces each one."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+wsgap = "wsgap.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["wsgap"]
+
+[tool.setuptools.package-data]
+wsgap = ["catalog.json"]
