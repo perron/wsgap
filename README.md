@@ -7,7 +7,7 @@ Find the Google Workspace REST calls in your code and see which Workspace MCP to
 
 ## Why this exists
 
-On November 24, 2026 Google made its Workspace MCP servers generally available and published the Workspace AI Tools Addendum. From February 1, 2027, an AI agent (or a tool driven by one) must reach Workspace data through those MCP servers or the Workspace CLI. Agents that keep calling the REST APIs directly are held to Standard tier quotas. Sources: [Google Workspace Updates post](https://workspaceupdates.googleblog.com/2026/11/mcp-servers-cli-standardized-usage-tiers-now-available.html), [usage tiers page](https://developers.google.com/workspace/guides/quota-usage-tiers).
+On November 24, 2026 Google made its Workspace MCP servers generally available and published the Workspace AI Tools Addendum. From February 1, 2027, an AI agent (or a tool driven by one) must reach Workspace data through those MCP servers or the Workspace CLI instead of calling the REST APIs directly. Google's technical enforcement of that rule begins on that date. A separate change, the new Standard and Scaled usage tiers, takes effect on April 1, 2027. Sources: [Google Workspace Updates post](https://workspaceupdates.googleblog.com/2026/11/mcp-servers-cli-standardized-usage-tiers-now-available.html), [usage tiers page](https://developers.google.com/workspace/guides/quota-usage-tiers).
 
 The MCP servers don't cover the whole REST API. Gmail has no tool for attachment downloads or history sync. Drive has no sharing tool. Some tools only exist on the `/mcp/v1` endpoint, which needs an MCP client that supports form elicitation. So the first job of a migration is a list of what you call today and where each call lands. wsgap makes that list.
 
