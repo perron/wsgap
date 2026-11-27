@@ -21,8 +21,8 @@ def run(*args):
 
 def test_self_mode_turns_v1_only_into_none():
     c = cat.load_catalog()
-    assert report.resolve_method("gmail", "users.messages.send", c)[0] == "direct"
-    status, refs, note = report.resolve_method("gmail", "users.messages.send", c, self_mode=True)
+    assert report.resolve_method("gmail", "users.drafts.send", c)[0] == "direct"
+    status, refs, note = report.resolve_method("gmail", "users.drafts.send", c, self_mode=True)
     assert status == "none" and "self-mode" in note
     assert report.resolve_method("gmail", "users.drafts.create", c, self_mode=True)[0] == "direct"
 
@@ -54,13 +54,17 @@ def test_demo_scan_exit_codes():
     assert code == 0
     code, out, err = run("scan", "no/such/dir")
     assert code == 2 and "no such file" in err
+    code, out, err = run("scan", "examples/demo-agent", "--exclude", "*")
+    assert code == 2 and "no files to scan" in err
+    code, out, err = run("scan", "examples/demo-agent/tasks.go", "--exclude", "*.go")
+    assert code == 2
 
 
 def test_demo_json_summary():
     code, out, _ = run("scan", "examples/demo-agent", "--format", "json", "--fail-on", "never")
     data = json.loads(out)
     s = data["summary"]
-    assert (s["calls"], s["direct"], s["partial"], s["none"], s["unclear"]) == (17, 10, 2, 5, 0)
+    assert (s["calls"], s["direct"], s["partial"], s["none"], s["unclear"]) == (17, 8, 4, 5, 0)
     assert data["files_scanned"] == 4
     send = [r for r in data["results"] if r["method"] == "users.drafts.send"][0]
     assert send["tools"][0]["name"] == "send_message" and send["tools"][0]["v1_only"] is True
@@ -74,6 +78,13 @@ def test_lookup_and_tools_commands():
     assert code == 0 and out.startswith("NONE  drive permissions.create")
     code, out, err = run("lookup", "gmail", "users.bogus")
     assert code == 2
+    # Method names that start with the API name are kept as is.
+    code, out, _ = run("lookup", "tasks", "tasks.insert")
+    assert code == 0 and out.startswith("DIRECT  tasks tasks.insert  ->  create_task")
+    code, out, _ = run("lookup", "people", "people.searchContacts")
+    assert code == 0 and out.startswith("DIRECT  people people.searchContacts")
+    code, out, _ = run("lookup", "gmail", "gmail.users.threads.get")
+    assert code == 0 and out.startswith("DIRECT  gmail users.threads.get")
     code, out, _ = run("tools", "gmail")
     assert "gmail  https://gmailmcp.googleapis.com/mcp/v1  (30 tools, 25 on /mcp/v1self)" in out
     assert re.search(r"send_message\s+write, /mcp/v1 only", out)

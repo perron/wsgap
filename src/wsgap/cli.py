@@ -27,6 +27,9 @@ def cmd_scan(args) -> int:
             print(f"wsgap: no such file or directory: {p}", file=sys.stderr)
             return 2
     findings, nfiles = scanner.scan_paths(args.paths, exclude=args.exclude or ())
+    if nfiles == 0:
+        print("wsgap: no files to scan (check the path and --exclude)", file=sys.stderr)
+        return 2
     results = report.resolve(findings, catalog, self_mode=args.self_mode)
     base = args.paths[0] if len(args.paths) == 1 and os.path.isdir(args.paths[0]) else None
     if args.format == "json":
@@ -61,7 +64,8 @@ def cmd_lookup(args) -> int:
         print(f"wsgap: unknown API {args.api!r}; use one of: {', '.join(mapping.MAPPING)}", file=sys.stderr)
         return 2
     method = args.method
-    if method.startswith(api + "."):
+    # Accept "gmail.users.messages.send", but keep "tasks.insert" and "people.get" as is.
+    if mapping.lookup(api, method) is None and method.startswith(api + "."):
         method = method[len(api) + 1:]
     r = report.resolve_method(api, method, catalog, self_mode=args.self_mode)
     if r is None:

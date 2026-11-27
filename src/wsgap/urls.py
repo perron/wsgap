@@ -18,6 +18,8 @@ PREFIXES: List[Tuple[str, str, str]] = [
     ("www", "/gmail/v1/", "gmail"),
     ("www", "/upload/gmail/v1/", "gmail"),
     ("www", "/drive/v3/", "drive"),
+    ("www", "/drive/v2/", "drive"),
+    ("www", "/upload/drive/v2/", "drive"),
     ("www", "/upload/drive/v3/", "drive"),
     ("drive", "/drive/v3/", "drive"),
     ("drive", "/upload/drive/v3/", "drive"),
@@ -240,8 +242,9 @@ def find_http_verb(lines: List[str], idx: int, shell: bool = False) -> Optional[
 
     Shell: the whole backslash-continued command is used; curl with no -X
     means GET, or POST when it sends data.
-    Code: the URL's line, then the two lines before it for a call such as
-    requests.post(, then the three lines after it for a method: option.
+    Code: the URL's line, then up to four lines before it in the same
+    statement for a call such as requests.post(, then the three lines after
+    it for a method: option.
     """
     if shell:
         lo = idx
@@ -265,11 +268,16 @@ def find_http_verb(lines: List[str], idx: int, shell: bool = False) -> Optional[
         return same.pop()
     if same:
         return None
-    before = _verbs(lines[max(0, idx - 2):idx], _CALL_VERB)
-    if len(before) == 1:
-        return before.pop()
-    if before:
-        return None
+    # Walk back through the same statement (lines that don't end it) for a call verb.
+    for j in range(idx - 1, max(-1, idx - 5), -1):
+        prev = lines[j].strip()
+        if not prev or prev.endswith((")", ";", "}")):
+            break
+        found = _verbs([lines[j]], _CALL_VERB)
+        if len(found) == 1:
+            return found.pop()
+        if found:
+            return None
     after = _verbs(lines[idx + 1:idx + 4], _OPTION_VERB)
     if len(after) == 1:
         return after.pop()

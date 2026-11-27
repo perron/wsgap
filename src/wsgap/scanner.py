@@ -15,6 +15,9 @@ CODE_EXTS = {
     ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".mts", ".cts",
     ".go", ".java", ".kt", ".kts", ".sh", ".bash", ".zsh", ".ps1",
 }
+# Config files: only REST URLs are looked for, not client library calls.
+CONFIG_EXTS = {".json", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".env"}
+CONFIG_NAMES = {"Makefile", "makefile", "GNUmakefile", "Dockerfile", "Justfile", "justfile"}
 SKIP_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
     "env", ".tox", "dist", "build", ".next", ".mypy_cache", ".pytest_cache",
@@ -60,12 +63,15 @@ _BIND_PATTERNS = [
     re.compile(r"([A-Za-z_]\w*)\s*,\s*\w+\s*:?=\s*(\w+)\.NewService\("),
     # Java/Kotlin: Gmail service = new Gmail.Builder(...)
     re.compile(r"([A-Za-z_]\w*)\s*=\s*(?:new\s+)?(\w+)\.Builder\("),
+    # Go parameter or field: srv *drive.Service
+    re.compile(r"\b([A-Za-z_]\w*)\s+\*(\w+)\.Service\b"),
 ]
 
 _CHAIN = re.compile(
-    r"(?<![\w$.])(?P<recv>[A-Za-z_$][\w$]*)(?P<chain>(?:\s*(?:\(\s*\))?\s*\.\s*[A-Za-z_]\w*){2,7})\s*\("
+    r"(?<![\w$.?])(?P<recv>[A-Za-z_$][\w$]*)(?P<chain>(?:\s*(?:\(\s*\))?\s*\??\.\s*[A-Za-z_]\w*){2,7})\s*\("
 )
-_SEG = re.compile(r"(\(\s*\))?\s*\.\s*([A-Za-z_]\w*)")
+_SEG = re.compile(r"(\(\s*\))?\s*\??\.\s*([A-Za-z_]\w*)")
+_COMMENT_LINE = re.compile(r"^\s*(?:#(?!!)|//|/\*|\*|--\s|REM\s)")
 
 
 @dataclass
@@ -81,8 +87,11 @@ class Finding:
 
 
 def _excluded(rel: str, patterns: Sequence[str]) -> bool:
-    rel = rel.replace(os.sep, "/")
-    return any(fnmatch.fnmatch(rel, pat) for pat in patterns)
+    rel = os.path.normpath(rel).replace(os.sep, "/")
+    for pat in patterns:
+        if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(rel, "*/" + pat):
+            return True
+    return False
 
 
 def iter_files(paths: Iterable[str], exts=None, exclude: Sequence[str] = ()) -> Iterable[str]:
@@ -91,15 +100,16 @@ def iter_files(paths: Iterable[str], exts=None, exclude: Sequence[str] = ()) -> 
     exclude: glob patterns matched against the path relative to each scanned
     folder, for example "tests/*" or "*_test.go".
     """
-    exts = exts or CODE_EXTS
+    exts = exts or (CODE_EXTS | CONFIG_EXTS)
     for p in paths:
         if os.path.isfile(p):
-            yield p
+            if not (exclude and _excluded(p, exclude)):
+                yield p
             continue
         for root, dirs, files in os.walk(p):
             dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
             for name in sorted(files):
-                if os.path.splitext(name)[1].lower() not in exts:
+                if os.path.splitext(name)[1].lower() not in exts and name not in CONFIG_NAMES:
                     continue
                 full = os.path.join(root, name)
                 if exclude and _excluded(os.path.relpath(full, p), exclude):
@@ -107,8 +117,15 @@ def iter_files(paths: Iterable[str], exts=None, exclude: Sequence[str] = ()) -> 
                 yield full
 
 
+_REQUIRE = re.compile(r"([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)")
+
+
 def find_bindings(text: str) -> Dict[str, str]:
     out: Dict[str, str] = {}
+    # const drive = require("./my-drive") is not a Google client.
+    for m in _REQUIRE.finditer(text):
+        if "googleapis" not in m.group(2):
+            out[m.group(1)] = "other"
     for pat in _BIND_PATTERNS:
         for m in pat.finditer(text):
             var, lib = m.group(1), m.group(2).lower()
@@ -179,13 +196,14 @@ def _try_window(names, called, start, end, bindings, has_marker):
             continue
         if len(segs_try) >= 3 or bound == api:
             return api, key
+        # Two segments, e.g. files.list: needs more evidence than the path itself.
         resource = segs_try[0]
         py_style = called[start]
         hinted = any(h in receiver.lower() for h in HINTS[api])
         unique = resource.lower() in {r.lower() for r in UNIQUE_TOP.get(api, set())}
-        if hinted and (has_marker or py_style):
+        if has_marker and (hinted or unique):
             return api, key
-        if py_style and (has_marker or unique):
+        if hinted and py_style:
             return api, key
     return None
 
@@ -217,6 +235,8 @@ def scan_client_calls(text: str, path: str, starts: List[int], lines: List[str])
         if not hit:
             continue
         ln = _line_of(text, m.start(), starts)
+        if _COMMENT_LINE.match(lines[ln - 1]):
+            continue
         found.append(Finding(path, ln, hit[0], hit[1], "client", lines[ln - 1].strip()))
     return found
 
@@ -232,7 +252,9 @@ def scan_urls(text: str, path: str, starts: List[int], lines: List[str]) -> List
         if not parsed:
             continue
         ln = _line_of(text, m.start(), starts)
-        shell = os.path.splitext(path)[1].lower() in SHELL_EXTS
+        if _COMMENT_LINE.match(lines[ln - 1]):
+            continue
+        shell = os.path.splitext(path)[1].lower() in SHELL_EXTS or os.path.basename(path) in CONFIG_NAMES
         verb = urls.find_http_verb(lines, ln - 1, shell=shell)
         cands = urls.methods_for(api, parsed, verb, upload)
         mapped = [c for c in cands if mapping.lookup(api, c)]
@@ -249,7 +271,10 @@ def scan_text(text: str, path: str) -> List[Finding]:
     for i, ch in enumerate(text):
         if ch == "\n":
             starts.append(i + 1)
-    findings = scan_client_calls(text, path, starts, lines) + scan_urls(text, path, starts, lines)
+    ext = os.path.splitext(path)[1].lower()
+    is_config = ext in CONFIG_EXTS or os.path.basename(path) in CONFIG_NAMES
+    findings = [] if is_config else scan_client_calls(text, path, starts, lines)
+    findings += scan_urls(text, path, starts, lines)
     findings.sort(key=lambda f: (f.line, f.method))
     return findings
 

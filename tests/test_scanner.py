@@ -30,8 +30,12 @@ def test_two_segment_paths_need_evidence():
     # Plain Python list/dict calls must not count.
     src = "tasks = []\ntasks.insert(0, x)\nevents.update(other)\nvalues.get('a')\nfiles.update(y)\n"
     assert methods(src) == []
-    # Discovery style with a unique Workspace resource does count, even without an import.
-    assert methods("def f(service):\n    service.files().list(q='x').execute()\n") == [("drive", "files.list")]
+    # A generic receiver with no Google import is not enough for a short path.
+    assert methods("def f(service):\n    service.files().list(q='x').execute()\n") == []
+    assert methods("cache.files().list()\nanalytics.events().list()\nboard.tasks().insert(body={})\n") == []
+    # A receiver named for the API, or a Google import, is.
+    assert methods("def f(drive_service):\n    drive_service.files().list(q='x').execute()\n") == [("drive", "files.list")]
+    assert methods("from googleapiclient import discovery\ndef f(service):\n    service.files().list().execute()\n") == [("drive", "files.list")]
 
 
 def test_other_google_api_is_ignored():
@@ -135,3 +139,56 @@ def test_exclude_and_skip_dirs(tmp_path):
     assert n == 2 and len(found) == 2
     found, n = scanner.scan_paths([str(tmp_path)], exclude=["tests/*"])
     assert n == 1 and found[0].path.endswith("app.py")
+
+
+def test_require_of_local_module_is_not_a_client():
+    src = ('import { google } from "googleapis";\n'
+           'const drive2 = require("./my-drive");\n'
+           'drive2.files.list();\n'
+           'const drive = google.drive({ version: "v3" });\n'
+           'drive.files.list();\n')
+    f = scanner.scan_text(src, "a.js")
+    assert [(x.line, x.method) for x in f] == [(5, "files.list")]
+
+
+def test_youtube_comments_with_import_but_no_binding_is_ignored():
+    src = ("from googleapiclient.discovery import build\n"
+           "def list_comments(service):\n"
+           "    return service.comments().list(part='snippet', videoId='abc').execute()\n")
+    assert methods(src) == []
+
+
+def test_comment_lines_are_skipped():
+    src = ("# gmail.users().threads().list(userId='me')\n"
+           "// drive.files.list()\n"
+           "svc.users().threads().get(userId='me', id=i)\n")
+    assert methods(src) == [("gmail", "users.threads.get")]
+
+
+def test_optional_chaining_and_go_param_binding():
+    assert methods('import { google } from "googleapis";\nawait drive?.files.list({ pageSize: 5 });\n', "a.ts") == [("drive", "files.list")]
+    src = 'import "google.golang.org/api/drive/v3"\nfunc L(srv *drive.Service) {\n\tsrv.Files.List().Do()\n}\n'
+    assert methods(src, "a.go") == [("drive", "files.list")]
+
+
+def test_verb_from_statement_several_lines_up():
+    src = ("requests.delete(\n"
+           "    mid,\n"
+           "    timeout=30,\n"
+           "    url='https://gmail.googleapis.com/gmail/v1/users/me/messages/' + mid,\n"
+           ")\n")
+    f = scanner.scan_text(src, "a.py")
+    assert [(x.method, x.http_verb) for x in f] == [("users.messages.delete", "DELETE")]
+
+
+def test_config_files_url_only(tmp_path):
+    (tmp_path / "agent.json").write_text('{"url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", "x": "gmail.users.messages.send(a)"}')
+    (tmp_path / "Makefile").write_text('sync:\n\tcurl -X DELETE "https://www.googleapis.com/drive/v3/files/ID"\n')
+    found, n = scanner.scan_paths([str(tmp_path)])
+    assert n == 2
+    assert sorted((f.kind, f.method) for f in found) == [("url", "files.delete"), ("url", "users.messages.send")]
+
+
+def test_drive_v2_url():
+    f = scanner.scan_text('requests.get("https://www.googleapis.com/drive/v2/files/FILEID")\n', "a.py")
+    assert [(x.api, x.method) for x in f] == [("drive", "files.get")]

@@ -93,7 +93,11 @@ def resolve(findings: List[Finding], catalog: Dict, self_mode: bool = False) -> 
                         seen.add((t.api, t.name))
             if len(statuses) > 1:
                 status = "unclear"
-                note = "HTTP verb not found near the URL. " + "; ".join(parts) + "."
+                if f.http_verb:
+                    lead = f"{f.http_verb} doesn't name a standard method for this path. "
+                else:
+                    lead = "HTTP verb not found near the URL. "
+                note = lead + "; ".join(parts) + "."
         out.append(Result(f, status, refs, note, worst))
     return out
 

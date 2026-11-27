@@ -40,24 +40,25 @@ NONE     sync_history.sh:5  gmail users.history.list  ->  -
 NONE     sync_history.sh:7  gmail users.messages.delete  ->  -
          Permanent delete has no tool. trash_message only moves to Trash.
 NONE     tasks.go:21  tasks tasks.move  ->  -
-PARTIAL  drive_report.ts:10  drive files.update  ->  update_file, upload_file_revision [/mcp/v1 only]
-         update_file changes title, parentId (move), description, star and lock. New content goes through upload_file_revision (non-Google files only).
+PARTIAL  drive_report.ts:10  drive files.update  ->  update_file, upload_file_revision [/mcp/v1 only], trash_file
+         update_file changes title, parentId (move), description, star and lock. New content goes through upload_file_revision (non-Google files only). Setting trashed: true is trash_file.
+PARTIAL  mail_triage.py:9  gmail users.threads.list  ->  search_threads
+         Drafts are always excluded (use list_drafts), pageSize is at most 50, and label: takes the label's display name, not its id.
 PARTIAL  mail_triage.py:13  gmail users.threads.modify  ->  label_thread, unlabel_thread
          Adding and removing labels are separate calls.
+PARTIAL  sync_history.sh:9  calendar events.list  ->  list_events
+         Without an end time list_events covers 7 days from the start, and its schema has no singleEvents option. For keyword search on the primary calendar, Google points to search_events.
 DIRECT   drive_report.ts:7  drive files.create  ->  create_file
 DIRECT   drive_report.ts:15  sheets spreadsheets.values.append  ->  append_values
-DIRECT   mail_triage.py:9  gmail users.threads.list  ->  search_threads
 DIRECT   mail_triage.py:11  gmail users.threads.get  ->  get_thread
 DIRECT   mail_triage.py:31  gmail users.drafts.create  ->  create_draft
 DIRECT   mail_triage.py:32  gmail users.drafts.send  ->  send_message [/mcp/v1 only]
          Pass draftId to send_message.
 DIRECT   mail_triage.py:37  calendar events.insert  ->  create_event
 DIRECT   mail_triage.py:38  calendar calendarList.list  ->  list_calendars
-DIRECT   sync_history.sh:9  calendar events.list  ->  list_events
-         search_events does semantic search on the primary calendar.
 DIRECT   tasks.go:17  tasks tasks.insert  ->  create_task
 
-17 Workspace REST call(s) in 4 of 4 scanned file(s): 10 direct, 2 partial, 5 none.
+17 Workspace REST call(s) in 4 of 4 scanned file(s): 8 direct, 4 partial, 5 none.
 Catalog: https://developers.google.com/workspace/guides/mcp-server-tools.md.txt (fetched 2026-11-27).
 ```
 
@@ -70,7 +71,7 @@ Each line is one call: status, file and line, the REST method, then the MCP tool
 
 The flag `/mcp/v1 only` means the tool is not on the `/mcp/v1self` endpoint, so your MCP client needs form elicitation to call it.
 
-The exit code is 1 when any call has no MCP tool, so you can use wsgap in CI (see below).
+The exit code is 1 when any call has no MCP tool, so you can use wsgap in CI (see below). It is 2 for usage errors, including when no files were scanned.
 
 ## Look up one method
 
@@ -128,17 +129,24 @@ wsgap scan --catalog wsgap-catalog.json src
 
 ## What it finds
 
-- Client library calls in Python (google-api-python-client), JavaScript and TypeScript (googleapis), Go (google.golang.org/api) and Java or Kotlin, including chains split across lines.
-- Raw REST URLs (`https://gmail.googleapis.com/gmail/v1/...`, `https://www.googleapis.com/drive/v3/...` and the rest) in any of those files and in shell scripts. The HTTP verb comes from the same statement: `requests.post(`, `method: "PATCH"`, `curl -X DELETE`, or `curl` with `-d` (POST) or without (GET).
-- Drive API v2 names (`files.insert`, `permissions.insert`) and the Python media helpers (`files().get_media()`, `files().export_media()`).
+- Client library calls in Python (google-api-python-client), JavaScript and TypeScript (googleapis), Go (google.golang.org/api) and Java or Kotlin, including chains split across lines and `?.` optional chaining.
+- Raw REST URLs (`https://gmail.googleapis.com/gmail/v1/...`, `https://www.googleapis.com/drive/v3/...` and the rest) in those files, in shell scripts, and in config files (`.json`, `.yml`, `.yaml`, `.toml`, `.ini`, `.cfg`, `.env`, `Makefile`, `Dockerfile`). The HTTP verb comes from the same statement: `requests.post(`, `method: "PATCH"`, `curl -X DELETE`, or `curl` with `-d` (POST) or without (GET).
+- Drive API v2 names and URLs (`files.insert`, `permissions.insert`, `/drive/v2/`) and the Python media helpers (`files().get_media()`, `files().export_media()`).
+- Lines that start as a comment (`#`, `//`, `/*`, `*`) are skipped.
 
-To keep false alarms down, a short call such as `files.list(` only counts when there is evidence it is a Google client: the receiver was created with `build("drive", ...)`, `google.drive(...)` or `drive.NewService(...)` in the same file, its name says so (`drive`, `driveService`), or it uses the Python discovery style (`service.files().list(`). Longer paths such as `users().messages().send(` always count.
+How it decides a call is a Google client call:
+
+- Paths with three or more parts, such as `users().messages().send(`, always count.
+- Two-part calls such as `files.list(` count when the receiver was created in the same file with `build("drive", ...)`, `google.drive(...)`, `drive.NewService(...)` or `new Drive.Builder(...)`, or is typed `*drive.Service` in Go.
+- Otherwise a two-part call counts only when the file imports a Google client library and the receiver's name points at the API (`drive`, `driveService`) or the resource only exists in Workspace (`files`, `events`, `spreadsheets` and similar). A receiver named for the API in Python discovery style (`drive_service.files().list(`) also counts without the import.
+- A receiver created for another API in the same file (`build("youtube", ...)`, `require("./my-drive")`) never counts.
 
 ## Limits
 
 - The REST-to-MCP mapping was written by hand from Google's tool reference pages on Nov 27 2026. A `DIRECT` means the tool does the same job, not that every parameter matches. Read the tool's schema before you switch.
 - wsgap reads code as text. It does not follow variables across files, so a URL built from pieces in different places, or a client passed through several layers with a generic name, can be missed. A call such as `build("drive", "v3").files().list()` on one line is also missed.
-- Calls inside comments and strings are reported like code.
+- Code inside docstrings and multi-line strings is reported like code. Comment lines are skipped.
+- A three-part path such as `users().messages().send(` is reported even on an object that isn't a Google client.
 - It only knows the nine generally available servers (Gmail, Drive, Docs, Sheets, Slides, Calendar, Chat, Tasks, People). Admin SDK, Classroom, Forms, Keep and Apps Script calls are ignored.
 - It does not check OAuth clients, the "AI-powered agent" flag, quotas, or the addendum's data rules (for example the 30-day limit on stored embeddings). Those are in Google's [configuration guide](https://developers.google.com/workspace/guides/configure-mcp-servers).
 - The gws and gwscli command line tools are not scanned.
